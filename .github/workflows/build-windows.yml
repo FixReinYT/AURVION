@@ -2,16 +2,6 @@ name: AURVION Windows installer
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "main.py"
-      - "jarvis/**"
-      - "assets/**"
-      - "installer/**"
-      - "requirements.txt"
-      - "tests/**"
-      - ".github/workflows/build-windows.yml"
 
 permissions:
   contents: read
