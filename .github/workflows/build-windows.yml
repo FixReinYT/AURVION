@@ -2,6 +2,11 @@ name: AURVION Windows installer
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-windows.yml"
+      - "source/AURVION_source.zip"
 
 permissions:
   contents: read
@@ -9,10 +14,18 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Unpack source archive
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "aurvion-source"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Expand-Archive -LiteralPath "source/AURVION_source.zip" -DestinationPath $stage -Force
+          Copy-Item -Path (Join-Path $stage "*") -Destination $env:GITHUB_WORKSPACE -Recurse -Force
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,14 +33,12 @@ jobs:
           python-version: "3.11"
           architecture: "x64"
 
-      - name: Validate project files
+      - name: Validate source and branding
         shell: pwsh
         run: |
-          $required = @("main.py", "requirements.txt", "jarvis/ui/main_window.py", "assets/AURVION.ico", "assets/AURVION.svg", "assets/AURVION.jpeg", "installer/AURVION_Setup.iss")
+          $required = @("main.py", "requirements.txt", "jarvis/ui/main_window.py", "assets/AURVION.svg", "installer/AURVION_Setup.iss", "scripts/generate_icons.py")
           $missing = @($required | Where-Object { -not (Test-Path $_) })
-          if ($missing.Count -gt 0) {
-            Write-Error ("Missing required project files: " + ($missing -join ", "))
-          }
+          if ($missing.Count -gt 0) { throw ("Missing required files: " + ($missing -join ", ")) }
 
       - name: Install dependencies
         run: |
@@ -35,13 +46,16 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Generate Windows icon assets
+        run: python scripts/generate_icons.py
+
       - name: Download offline Russian speech model
         shell: pwsh
         run: |
           $modelName = "vosk-model-small-ru-0.22"
           New-Item -ItemType Directory -Force models | Out-Null
           Invoke-WebRequest "https://alphacephei.com/vosk/models/$modelName.zip" -OutFile "models/$modelName.zip"
-          Expand-Archive "models/$modelName.zip" "models" -Force
+          Expand-Archive -LiteralPath "models/$modelName.zip" -DestinationPath "models" -Force
           Remove-Item "models/$modelName.zip" -Force
 
       - name: Run tests
@@ -51,11 +65,12 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --windowed --onedir --name AURVION --icon "assets/AURVION.ico" --collect-all vosk --collect-all sounddevice --collect-all pyttsx3 --collect-all PySide6 --hidden-import win32com.client --hidden-import comtypes --add-data "assets;assets" --add-data "models;models" main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
 
-      - name: Build installer
+      - name: Compile installer
         shell: pwsh
         run: |
           $iscc = "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe"
@@ -63,6 +78,13 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found." }
           & $iscc "installer/AURVION_Setup.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify installer output
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "installer/Output/AURVION_Setup_*.exe" -ErrorAction Stop | Select-Object -First 1
+          if (-not $setup -or $setup.Length -lt 1000000) { throw "Installer output is missing or unexpectedly small." }
+          Write-Host "Built installer: $($setup.FullName), $($setup.Length) bytes"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
